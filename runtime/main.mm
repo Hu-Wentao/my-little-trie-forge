@@ -61,6 +61,7 @@ struct NativeArguments final {
   uint64_t ssdTransferBytes = uint64_t{256} << 20;
   uint64_t ssdQuotaBytes = uint64_t{1} << 30;
   uint64_t ssdFreeFloorBytes = uint64_t{8} << 30;
+  uint32_t idleReclaimPercent = engine::kDefaultIdleReclaimPercent;
 };
 
 // One observer spans bootstrap and serving. The dispatch queue only records
@@ -132,7 +133,8 @@ void printUsage(std::string_view executable) {
             << " serve-native TARGET_DIRECTORY DRAFT_DIRECTORY"
                " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto [--kv-format int8|bf16]"
                " [--ssd-root PRIVATE_DIRECTORY] [--ssd-transfer-bytes N]"
-               " [--ssd-quota-bytes N] [--ssd-free-floor-bytes N]\n";
+               " [--ssd-quota-bytes N] [--ssd-free-floor-bytes N]"
+               " [--idle-reclaim-percent 1-100]\n";
 }
 
 template <typename T>
@@ -222,6 +224,12 @@ NativeArguments parseArguments(int argc, char **argv) {
       if (option == "--ssd-transfer-bytes") result.ssdTransferBytes = bytes;
       else if (option == "--ssd-quota-bytes") result.ssdQuotaBytes = bytes;
       else result.ssdFreeFloorBytes = bytes;
+    } else if (option == "--idle-reclaim-percent") {
+      uint32_t percent = 0;
+      if (!parsePositive(value, percent) || percent > 100)
+        throw UsageError(
+            "--idle-reclaim-percent requires an integer in [1, 100]");
+      result.idleReclaimPercent = percent;
     } else {
       throw UsageError("unknown serve-native option");
     }
@@ -397,8 +405,8 @@ int runNative(const NativeArguments &arguments) {
 
   transport.setControlHandler([&pressureMonitor, published,
                                memoryReporter = engine::MemoryStatusReporter{},
-                               pressurePolicy =
-                                   engine::MemoryPressurePolicy{}]() mutable {
+                               pressurePolicy = engine::MemoryPressurePolicy{
+                                   arguments.idleReclaimPercent}]() mutable {
     engine::MemoryPressure pressure = pressureMonitor.pressure();
     engine::RuntimeResources &resources = published->resources();
     engine::MemoryGovernor &governor = resources.memoryGovernor();
@@ -415,7 +423,8 @@ int runNative(const NativeArguments &arguments) {
     if (!diagnostic.empty())
       std::cerr << diagnostic << '\n';
     engine::MemoryReclaimDirective directive =
-        pressurePolicy.update(memory, now, wait.memory || wait.suspended);
+        pressurePolicy.update(memory, now, wait.memory || wait.suspended,
+                              published->nativeLoop().idle());
     if (!directive.reclaimEmptyKvExtents)
       return false;
     static_cast<void>(published->nativeLoop().reclaimMemory(directive));

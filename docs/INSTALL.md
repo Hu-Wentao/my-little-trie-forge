@@ -47,6 +47,7 @@ The budget covers engine Metal allocations and governor-managed memory. It is no
 | `--ssd-root` | unset, SSD cache OFF | Opt-in SSD cache at an absolute private 0700 directory |
 | `--ssd-quota-bytes` | when enabled: 1,073,741,824 (1GiB) | Cache quota, positive integer bytes |
 | `--ssd-free-floor-bytes` | when enabled: 8,589,934,592 (8GiB) | Filesystem free-space floor, nonnegative integer bytes |
+| `--idle-reclaim-percent` | `60` | After 30 seconds with no active request, return empty KV backing and idle state buffers to the OS once host memory use reaches this percent of physical RAM, integer 1–100. Cached prefixes are kept |
 
 Default cache disk usage is zero while SSD caching is disabled; model weights/downloads use separate disk space. SSD byte-limit flags require `--ssd-root`. For a 20GiB cache quota with an 8GiB free-space floor:
 

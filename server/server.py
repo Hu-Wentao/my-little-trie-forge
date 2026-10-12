@@ -1983,6 +1983,12 @@ def parse_args(argv=None):
     parser.add_argument("--ssd-quota-bytes", type=int)
     parser.add_argument("--ssd-free-floor-bytes", type=int)
     parser.add_argument(
+        "--idle-reclaim-percent",
+        type=int,
+        help="after 30s idle, release empty KV backing once host memory use "
+        "reaches this percent, 1-100 (default: 60)",
+    )
+    parser.add_argument(
         "--max-request-size",
         type=_parse_request_size,
         default=DEFAULT_MAX_REQUEST_BYTES,
@@ -2041,6 +2047,8 @@ def parse_args(argv=None):
         args.ssd_quota_bytes is not None or args.ssd_free_floor_bytes is not None
     ) and args.ssd_root is None:
         parser.error("SSD byte limits require --ssd-root")
+    if args.idle_reclaim_percent is not None and not 1 <= args.idle_reclaim_percent <= 100:
+        parser.error("--idle-reclaim-percent must be in [1, 100]")
     if not 0 <= args.port <= 65535:
         parser.error("--port must be in [0, 65535]")
     return args
@@ -2063,6 +2071,8 @@ def _native_command(args):
         command.extend(("--ssd-quota-bytes", str(args.ssd_quota_bytes)))
     if args.ssd_free_floor_bytes is not None:
         command.extend(("--ssd-free-floor-bytes", str(args.ssd_free_floor_bytes)))
+    if args.idle_reclaim_percent is not None:
+        command.extend(("--idle-reclaim-percent", str(args.idle_reclaim_percent)))
     return command
 
 
