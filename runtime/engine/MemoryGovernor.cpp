@@ -273,6 +273,14 @@ void MemoryGovernor::setPressure(MemoryPressure pressure) noexcept {
   systemPressure_ = pressure;
 }
 
+void MemoryGovernor::setLimitBytes(uint64_t bytes) {
+  if (!bytes) {
+    throw std::invalid_argument("memory governor limit must be positive");
+  }
+  std::lock_guard lock(mutex_);
+  limitBytes_ = bytes;
+}
+
 MemoryGovernorSnapshot MemoryGovernor::snapshot() const noexcept {
   std::lock_guard lock(mutex_);
   uint64_t metalObserved = observedResidentBytes();
