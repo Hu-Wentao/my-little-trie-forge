@@ -62,6 +62,7 @@ struct NativeArguments final {
   uint64_t ssdQuotaBytes = uint64_t{1} << 30;
   uint64_t ssdFreeFloorBytes = uint64_t{8} << 30;
   uint32_t idleReclaimPercent = engine::kDefaultIdleReclaimPercent;
+  uint32_t dutyPercent = 100;
 };
 
 // One observer spans bootstrap and serving. The dispatch queue only records
@@ -134,7 +135,7 @@ void printUsage(std::string_view executable) {
                " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto [--kv-format int8|bf16]"
                " [--ssd-root PRIVATE_DIRECTORY] [--ssd-transfer-bytes N]"
                " [--ssd-quota-bytes N] [--ssd-free-floor-bytes N]"
-               " [--idle-reclaim-percent 1-100]\n";
+               " [--idle-reclaim-percent 1-100] [--gpu-duty-percent 1-100]\n";
 }
 
 template <typename T>
@@ -230,6 +231,11 @@ NativeArguments parseArguments(int argc, char **argv) {
         throw UsageError(
             "--idle-reclaim-percent requires an integer in [1, 100]");
       result.idleReclaimPercent = percent;
+    } else if (option == "--gpu-duty-percent") {
+      uint32_t percent = 0;
+      if (!parsePositive(value, percent) || percent > 100)
+        throw UsageError("--gpu-duty-percent requires an integer in [1, 100]");
+      result.dutyPercent = percent;
     } else {
       throw UsageError("unknown serve-native option");
     }
@@ -286,6 +292,7 @@ bootstrapConfig(const NativeArguments &arguments) {
   config.resources.ssdFreeFloorBytes = arguments.ssdFreeFloorBytes;
   config.resources.maximumImagePatches = kMaximumImagePatches;
   config.nativeLoop.engine.maxContext = arguments.maxContext;
+  config.nativeLoop.engine.dutyPercent = arguments.dutyPercent;
   config.nativeLoop.engine.maxImagePatches = kMaximumImagePatches;
   config.protocolLimits.maxImagePatches = kMaximumImagePatches;
   config.nativeLoop.engineInstanceId = engineInstanceId();

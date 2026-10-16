@@ -1989,6 +1989,12 @@ def parse_args(argv=None):
         "reaches this percent, 1-100 (default: 60)",
     )
     parser.add_argument(
+        "--gpu-duty-percent",
+        type=int,
+        help="share of wall time the GPU may be busy, 1-100; below 100 the "
+        "engine pauses after each command to run slower (default: 100)",
+    )
+    parser.add_argument(
         "--max-request-size",
         type=_parse_request_size,
         default=DEFAULT_MAX_REQUEST_BYTES,
@@ -2049,6 +2055,8 @@ def parse_args(argv=None):
         parser.error("SSD byte limits require --ssd-root")
     if args.idle_reclaim_percent is not None and not 1 <= args.idle_reclaim_percent <= 100:
         parser.error("--idle-reclaim-percent must be in [1, 100]")
+    if args.gpu_duty_percent is not None and not 1 <= args.gpu_duty_percent <= 100:
+        parser.error("--gpu-duty-percent must be in [1, 100]")
     if not 0 <= args.port <= 65535:
         parser.error("--port must be in [0, 65535]")
     return args
@@ -2073,6 +2081,8 @@ def _native_command(args):
         command.extend(("--ssd-free-floor-bytes", str(args.ssd_free_floor_bytes)))
     if args.idle_reclaim_percent is not None:
         command.extend(("--idle-reclaim-percent", str(args.idle_reclaim_percent)))
+    if args.gpu_duty_percent is not None:
+        command.extend(("--gpu-duty-percent", str(args.gpu_duty_percent)))
     return command
 
 
