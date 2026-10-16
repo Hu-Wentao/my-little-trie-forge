@@ -278,6 +278,12 @@ void Engine::setCompletionNotifier(std::function<void()> notifier) {
   completionNotifier_ = std::move(notifier);
 }
 
+namespace {
+// A long idle gap lets the GPU drop its clocks, which inflates the next
+// command's wall time and, through the duty formula, the next pause.
+constexpr double kMaxDutyPauseMilliseconds = 250.0;
+} // namespace
+
 bool Engine::tick(double now) {
   model_.checkHealth();
   nextHealthCheckMilliseconds_ = now + kHealthCheckIntervalMilliseconds;
@@ -330,8 +336,10 @@ bool Engine::tick(double now) {
           command.ticket->prefillTimingIsRepresentative());
     if (config_.dutyPercent < 100) {
       nextDispatchMilliseconds_ =
-          now + command.ticket->wallMilliseconds() *
-                    (100.0 - config_.dutyPercent) / config_.dutyPercent;
+          now + std::min(kMaxDutyPauseMilliseconds,
+                         command.ticket->wallMilliseconds() *
+                             (100.0 - config_.dutyPercent) /
+                             config_.dutyPercent);
     }
     sweepTerminal();
     return true;

@@ -16,7 +16,7 @@ MLTF 本身**不监测负载、不管理任务**。它只提供“按参数运�
 | `--max-memory` | 引擎内存上限（不能低于权重，约 31 GiB） | 视情况 |
 | `--idle-reclaim-percent` | 空闲 30 秒后，整机内存占用达到该比例就释放空 KV | `30` |
 
-`--gpu-duty-percent` 是为安静模式新增的：nice/QoS 对 Metal 计算基本无效，只有让引擎自己停顿，GPU 才会真正降速、降功耗。例如 `N=25` 时 GPU 约 25% 时间忙，吞吐约降到 1/4（实际比例受 prefill/decode 批次大小影响，见 PR 中的实测）。
+`--gpu-duty-percent` 是为安静模式新增的：nice/QoS 对 Metal 计算基本无效，只有让引擎自己停顿，GPU 才会真正降速。每条命令之后的暂停是 `命令耗时 × (100−N)/N`，但**单次暂停上限 250 ms**：实测发现，暂停过长时 GPU 会降频，下一条命令耗时被放大约 9 倍，公式又据此算出更长的暂停，形成恶性循环（N=25 时 256 个 token 用了约 4 分钟，仅 0.9 tok/s）。加上限后 decode 命令耗时恢复到约 95 ms。所以 decode 阶段的有效占空比下限约 28%（95 ms 命令配 250 ms 暂停），N 小于 28 时不会再慢下去。
 
 ## 控制器的做法（路径 A+B：切换即重启）
 
@@ -39,6 +39,18 @@ MLTF 本身**不监测负载、不管理任务**。它只提供“按参数运�
 - 原生层：`FrameType` 新增一种控制帧（如 `ConfigUpdate`），携带 `dutyPercent` 等；`Engine` 在 owner 线程上更新 `config_.dutyPercent`，`reclaim_now` 复用现有 `MemoryPressurePolicy` 的零目标释放。协议两侧都要改，并要更新特性位（`protocol::kNativeFeatureBits`）和兼容测试。
 - 限制：权重（约 30 GiB）仍常驻，退出安静模式只能释放 GPU 和 KV，不能释放权重；需要彻底腾出内存时仍要停服务。
 - 控制器可在两档之间选择：短时高负载用“暂停 + 热切换”，长时间高负载用“停服务”。
+
+## 实测（M3 Max 128 GB，Qwen3.8-27B q8c，上下文 8K，并发 1）
+
+同一请求（256 token，temperature 0），生成速度取 3 次中位数：
+
+| `--gpu-duty-percent` | 生成速度 | 相对 100% |
+|---:|---:|---:|
+| 100（不限速） | 26.0 tok/s | 100% |
+| 50 | 15.4 tok/s | 59% |
+| 25（带 250 ms 暂停上限） | 8.7 tok/s | 33% |
+
+注意：`ioreg` 的 `Device Utilization %` 在三档下都在 88–99%，不能用来衡量限速效果，GPU 功耗和温度未测量（需要 `powermetrics`，要 sudo）。已验证的只有“同一任务变慢、GPU 有空闲间隙”，不能据此宣称省电。
 
 ## 验证
 
