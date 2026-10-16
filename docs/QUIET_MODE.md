@@ -18,7 +18,7 @@ MLTF 本身**不监测负载、不管理任务**。它只提供“按参数运�
 
 `--gpu-duty-percent` 是为安静模式新增的：nice/QoS 对 Metal 计算基本无效，只有让引擎自己停顿，GPU 才会真正降速。每条命令之后的暂停是 `命令耗时 × (100−N)/N`，但**单次暂停上限 250 ms**：实测发现，暂停过长时 GPU 会降频，下一条命令耗时被放大约 9 倍，公式又据此算出更长的暂停，形成恶性循环（N=25 时 256 个 token 用了约 4 分钟，仅 0.9 tok/s）。加上限后 decode 命令耗时恢复到约 95 ms。所以 decode 阶段的有效占空比下限约 28%（95 ms 命令配 250 ms 暂停），N 小于 28 时不会再慢下去。
 
-## 控制器的做法（路径 A+B：切换即重启）
+## 控制器的做法（切换即重启；不想重启请用下面的 `/admin/profile`）
 
 1. 控制器定期读取整机 CPU、GPU（`ioreg` 的 AGXAccelerator `Device Utilization %`）和内存压力（`memory_pressure -Q`）。
 2. **进入高负载**：停止 MLTF 服务（`mltf service stop` 或 `launchctl bootout`），约 30 GiB 权重和 GPU 全部释放。
@@ -30,15 +30,45 @@ MLTF 本身**不监测负载、不管理任务**。它只提供“按参数运�
 
 代价：每次切换都要重新加载模型（数十秒），内存中的前缀缓存丢失（配置 `--ssd-root` 可保留部分）。
 
-## 后续设想：运行时调参接口（路径 C，未实现）
+## 运行时调节：`/admin/profile`
 
-目标：不重启、不重新加载模型，秒级切换工作档位。
+不重启、不重新加载模型，随时改资源占用。外部应用（测温度、内存占用的脚本）直接调用：
 
-- 新增管理接口，例如 `POST /admin/profile`，字段：`max_concurrent_requests`（`0` 表示暂停接收新请求）、`gpu_duty_percent`、`reclaim_now`（立即释放空 KV，不等 30 秒）。接口默认只对本机、并要求 API key。
-- Python 层：`WaitingAdmission` 的容量改为可调（当前创建后固定）；暂停时不取消在途请求，只停止放行新请求。
-- 原生层：`FrameType` 新增一种控制帧（如 `ConfigUpdate`），携带 `dutyPercent` 等；`Engine` 在 owner 线程上更新 `config_.dutyPercent`，`reclaim_now` 复用现有 `MemoryPressurePolicy` 的零目标释放。协议两侧都要改，并要更新特性位（`protocol::kNativeFeatureBits`）和兼容测试。
-- 限制：权重（约 30 GiB）仍常驻，退出安静模式只能释放 GPU 和 KV，不能释放权重；需要彻底腾出内存时仍要停服务。
-- 控制器可在两档之间选择：短时高负载用“暂停 + 热切换”，长时间高负载用“停服务”。
+```sh
+# 查看：requested 是你设过的值，applied 是引擎实际生效的值
+curl -s http://127.0.0.1:8000/admin/profile
+
+# 限速到 30%，同时把请求并发降到 1
+curl -s -X POST http://127.0.0.1:8000/admin/profile \
+  -d '{"gpu_duty_percent": 30, "max_concurrent_requests": 1}'
+
+# 暂停派发新命令（进行中的命令跑完，请求不会被取消）；再恢复
+curl -s -X POST http://127.0.0.1:8000/admin/profile -d '{"paused": true}'
+curl -s -X POST http://127.0.0.1:8000/admin/profile -d '{"paused": false}'
+
+# 下一条请求起，内存限额改为 48G；null 或 "auto" 回到启动上限
+curl -s -X POST http://127.0.0.1:8000/admin/profile -d '{"memory_limit": "48G"}'
+
+# 立即释放空的 KV 内存
+curl -s -X POST http://127.0.0.1:8000/admin/profile -d '{"reclaim_now": true}'
+```
+
+| 设置 | 取值 | 生效时机 |
+|---|---|---|
+| `gpu_duty_percent` | 1–100 | 立即 |
+| `paused` | true / false | 立即；暂停期间请求照常排队，超时仍按 `--request-timeout` 计 |
+| `max_concurrent_requests` | 1–4 | 立即；已在跑的请求不受影响，需要启动时带了 `--max-concurrent-requests`，否则返回 409 |
+| `memory_limit` | 字节数、`"48G"` 这样的大小、`null` | **所有请求结束、引擎空闲时**才生效，下一条请求使用新值；降低时会同时驱逐超出限额的缓存前缀 |
+| `reclaim_now` | `true` | 同样等引擎空闲后执行一次 |
+
+约束：
+
+- `memory_limit` 只能在“权重所需下限～启动时 `--max-memory`”之间调。启动值是上限（内存池按它规划），调高超过它会被拒绝（400），需要重启。想要最大灵活度，启动值就设成能接受的最大值。
+- 并发大于 1 时，“空闲”指所有请求都结束；持续有请求时，`memory_limit` 和 `reclaim_now` 会一直排队。`applied.memory_limit_pending_bytes` 能看到排队中的值。
+- `memory_limit` 设得比权重加一个请求所需的 KV 还小时，请求会等内存直到超时失败。接口不会替你判断这个下限，请用 `/status` 里的内存数据确认。
+- 运行中改的值在重启后失效，回到启动参数。
+- 接口走 HTTP：设置了 `--api-key` 时需要 key；没设置时只接受本机访问。所有数值都会校验，非法值返回 400，不会改变任何状态。
+- 引擎侧通过服务进程创建的私有临时目录交换设置（目录权限 0700，退出时删除），不新增原生协议帧。
 
 ## 实测（M3 Max 128 GB，Qwen3.8-27B q8c，上下文 8K，并发 1）
 

@@ -166,6 +166,9 @@ public:
   // reverse dependency on engine policy.
   [[nodiscard]] metal::AllocationAdmission allocationAdmission() noexcept;
   void setPressure(MemoryPressure pressure) noexcept;
+  // Changes the engine budget at a safe point. Memory already resident above
+  // the new limit stays until the owner reclaims it; growth is refused.
+  void setLimitBytes(uint64_t bytes);
   [[nodiscard]] MemoryGovernorSnapshot snapshot() const noexcept;
 
 private:

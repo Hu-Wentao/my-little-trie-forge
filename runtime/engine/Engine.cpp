@@ -353,6 +353,8 @@ bool Engine::tick(double now) {
   // pressure episode into a process-wide Metal execution failure.
   if (config_.dispatchPaused && config_.dispatchPaused())
     return progressed;
+  if (dispatchHeld_)
+    return progressed;
   if (config_.dutyPercent < 100 && now < nextDispatchMilliseconds_)
     return progressed;
   auto plan = scheduler_.next();

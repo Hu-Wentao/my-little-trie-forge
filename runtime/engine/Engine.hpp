@@ -115,6 +115,13 @@ public:
   void setCompletionNotifier(std::function<void()> notifier);
 
   [[nodiscard]] bool tick(double nowMilliseconds);
+  // Owner-thread controls for a running engine. Neither cancels a request.
+  void setDutyPercent(uint32_t percent) noexcept {
+    config_.dutyPercent = percent;
+    if (percent >= 100)
+      nextDispatchMilliseconds_ = 0.0;
+  }
+  void setDispatchHeld(bool held) noexcept { dispatchHeld_ = held; }
   [[nodiscard]] bool idle() const noexcept;
   [[nodiscard]] bool commandInFlight() const noexcept {
     return pending_.has_value();
@@ -194,6 +201,7 @@ private:
   double nextHealthCheckMilliseconds_ = 0.0;
   // Earliest time the duty-cycle limit allows the next command.
   double nextDispatchMilliseconds_ = 0.0;
+  bool dispatchHeld_ = false;
 
   [[nodiscard]] Request &request(uint64_t requestId);
   [[nodiscard]] bool admitQueued(double nowMilliseconds);

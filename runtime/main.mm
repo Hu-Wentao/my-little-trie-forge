@@ -2,6 +2,7 @@
 #include "engine/MemoryPlan.hpp"
 #include "engine/FdTransport.hpp"
 #include "engine/Bootstrap.hpp"
+#include "engine/RuntimeProfile.hpp"
 #include "engine/Status.hpp"
 #include "model/Model.hpp"
 #include "model/ModelDescriptor.hpp"
@@ -63,6 +64,7 @@ struct NativeArguments final {
   uint64_t ssdFreeFloorBytes = uint64_t{8} << 30;
   uint32_t idleReclaimPercent = engine::kDefaultIdleReclaimPercent;
   uint32_t dutyPercent = 100;
+  std::optional<std::filesystem::path> controlDirectory;
 };
 
 // One observer spans bootstrap and serving. The dispatch queue only records
@@ -135,7 +137,8 @@ void printUsage(std::string_view executable) {
                " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto [--kv-format int8|bf16]"
                " [--ssd-root PRIVATE_DIRECTORY] [--ssd-transfer-bytes N]"
                " [--ssd-quota-bytes N] [--ssd-free-floor-bytes N]"
-               " [--idle-reclaim-percent 1-100] [--gpu-duty-percent 1-100]\n";
+               " [--idle-reclaim-percent 1-100] [--gpu-duty-percent 1-100]"
+               " [--control-dir PRIVATE_DIRECTORY]\n";
 }
 
 template <typename T>
@@ -236,6 +239,11 @@ NativeArguments parseArguments(int argc, char **argv) {
       if (!parsePositive(value, percent) || percent > 100)
         throw UsageError("--gpu-duty-percent requires an integer in [1, 100]");
       result.dutyPercent = percent;
+    } else if (option == "--control-dir") {
+      std::filesystem::path directory(value);
+      if (!directory.is_absolute())
+        throw UsageError("--control-dir requires an absolute private path");
+      result.controlDirectory = std::move(directory);
     } else {
       throw UsageError("unknown serve-native option");
     }
@@ -410,7 +418,14 @@ int runNative(const NativeArguments &arguments) {
   bootstrap->resources().backend().setOperationGuard({});
   published = bootstrap.get();
 
-  transport.setControlHandler([&pressureMonitor, published,
+  std::optional<engine::RuntimeProfileApplier> profileApplier;
+  if (arguments.controlDirectory) {
+    profileApplier.emplace(
+        *arguments.controlDirectory,
+        engine::RuntimeProfile{.dutyPercent = arguments.dutyPercent},
+        published->resources().memoryGovernor().snapshot().limitBytes);
+  }
+  transport.setControlHandler([&pressureMonitor, published, &profileApplier,
                                memoryReporter = engine::MemoryStatusReporter{},
                                pressurePolicy = engine::MemoryPressurePolicy{
                                    arguments.idleReclaimPercent}]() mutable {
@@ -422,6 +437,9 @@ int runNative(const NativeArguments &arguments) {
                            std::chrono::steady_clock::now().time_since_epoch())
                            .count();
     static_cast<void>(resources.backend().refreshMemoryStats());
+    const bool profileFollowUp =
+        profileApplier &&
+        profileApplier->update(published->nativeLoop(), governor);
     const auto memory = governor.snapshot();
     const engine::ResourceWaitSnapshot wait =
         published->nativeLoop().resourceWaitSnapshot();
@@ -433,13 +451,13 @@ int runNative(const NativeArguments &arguments) {
         pressurePolicy.update(memory, now, wait.memory || wait.suspended,
                               published->nativeLoop().idle());
     if (!directive.reclaimEmptyKvExtents)
-      return false;
+      return profileFollowUp;
     static_cast<void>(published->nativeLoop().reclaimMemory(directive));
     static_cast<void>(resources.backend().refreshMemoryStats());
     // KV backing is returned one extent at a time. Ask to run again at the
     // next command-free point while a release is still in flight, so the
     // rest of the empty backing follows without a burst of kernel work.
-    return published->nativeLoop().reclaimDeferred();
+    return published->nativeLoop().reclaimDeferred() || profileFollowUp;
   });
   const auto exit = transport.run(bootstrap->nativeLoop());
   switch (exit) {
