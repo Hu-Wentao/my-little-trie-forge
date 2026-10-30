@@ -19,6 +19,17 @@ mltf serve --model Ho-Jin-93/Qwen3.8-27B-MLTF-q8c --max-context 256K --max-memor
 
 The downloader verifies the manifest and SHA-256. Review the model card and terms before consenting. Source conversion uses `prepare-q8c` from [MODEL_ASSETS.md](../MODEL_ASSETS.md).
 
+### Qwen3.6-35B-A3B (MoE)
+
+The runtime also contains the Qwen3.6-35B-A3B layout (`qwen3_5_moe`: 40 layers, 256 experts, 8 per token, about 3B active parameters) and accepts `splash-packed-q4-moe` packages. It is listed in the official model catalog and downloads through the same command:
+
+```sh
+mltf download --model incoai/Qwen3.6-35B-A3B-Splash --accept-model-licenses
+mltf serve --model incoai/Qwen3.6-35B-A3B-Splash --max-context 256K --max-memory 96G
+```
+
+This package is not produced by `prepare-q8c`; there is no source-conversion tool for it in this repository. It has not been benchmarked or validated on the M3 Max profile here, and the M5-only prefill kernels do not apply on M3.
+
 README256K/96G matches the validated target-machine profile. 32K/48G is a separate conservative profile and the prior soak scope. Signing is ad-hoc; Developer ID/notarization is not included.
 
 ## Run at login (macOS)
